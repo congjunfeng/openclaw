@@ -7,19 +7,16 @@ import {
   resolveConfiguredModelRef,
   resolveHooksGmailModel,
 } from "../agents/model-selection.js";
-import { runChannelPluginStartupMaintenance } from "../channels/plugins/lifecycle-startup.js";
 import { formatCliCommand } from "../cli/command-format.js";
-import { maybeRepairRemovedAnthropicClaudeCliState } from "../commands/doctor-auth-anthropic-claude-cli.js";
-import {
-  maybeRemoveDeprecatedCliAuthProfiles,
-  maybeRepairLegacyOAuthProfileIds,
-  noteAuthProfileHealth,
-} from "../commands/doctor-auth.js";
+import { maybeRepairLegacyOAuthProfileIds } from "../commands/doctor-auth-legacy-oauth.js";
+import { noteAuthProfileHealth, noteLegacyCodexProviderOverride } from "../commands/doctor-auth.js";
 import { noteBootstrapFileSize } from "../commands/doctor-bootstrap-size.js";
 import { noteChromeMcpBrowserReadiness } from "../commands/doctor-browser.js";
 import { maybeRepairBundledPluginRuntimeDeps } from "../commands/doctor-bundled-plugin-runtime-deps.js";
+import { noteClaudeCliHealth } from "../commands/doctor-claude-cli.js";
 import { doctorShellCompletion } from "../commands/doctor-completion.js";
 import { maybeRepairLegacyCronStore } from "../commands/doctor-cron.js";
+import { noteDevicePairingHealth } from "../commands/doctor-device-pairing.js";
 import { maybeRepairGatewayDaemon } from "../commands/doctor-gateway-daemon-flow.js";
 import { checkGatewayHealth, probeGatewayMemoryStatus } from "../commands/doctor-gateway-health.js";
 import {
@@ -50,9 +47,9 @@ import { MEMORY_SYSTEM_PROMPT, shouldSuggestMemorySystem } from "../commands/doc
 import { noteOpenAIOAuthTlsPrerequisites } from "../commands/oauth-tls-preflight.js";
 import { applyWizardMetadata, randomToken } from "../commands/onboard-helpers.js";
 import { ensureSystemdUserLingerInteractive } from "../commands/systemd-linger.js";
-import type { OpenClawConfig } from "../config/config.js";
 import { CONFIG_PATH, readConfigFileSnapshot, writeConfigFile } from "../config/config.js";
 import { logConfigUpdated } from "../config/logging.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveSecretInputRef } from "../config/types.secrets.js";
 import { resolveGatewayService } from "../daemon/service.js";
 import { hasAmbiguousGatewayAuthModeConfig } from "../gateway/auth-mode-policy.js";
@@ -61,6 +58,7 @@ import { buildGatewayConnectionDetails } from "../gateway/call.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { note } from "../terminal/note.js";
 import { shortenHomePath } from "../utils.js";
+import { maybeRunDoctorStartupChannelMaintenance } from "./doctor-startup-channel-maintenance.js";
 import type { FlowContribution } from "./types.js";
 
 export type DoctorFlowMode = "local" | "remote";
@@ -142,14 +140,13 @@ async function runGatewayConfigHealth(ctx: DoctorHealthFlowContext): Promise<voi
 }
 
 async function runAuthProfileHealth(ctx: DoctorHealthFlowContext): Promise<void> {
-  ctx.cfg = await maybeRepairRemovedAnthropicClaudeCliState(ctx.cfg, ctx.prompter);
   ctx.cfg = await maybeRepairLegacyOAuthProfileIds(ctx.cfg, ctx.prompter);
-  ctx.cfg = await maybeRemoveDeprecatedCliAuthProfiles(ctx.cfg, ctx.prompter);
   await noteAuthProfileHealth({
     cfg: ctx.cfg,
     prompter: ctx.prompter,
-    allowKeychainPrompt: ctx.options.nonInteractive !== true && Boolean(process.stdin.isTTY),
+    allowKeychainPrompt: ctx.options.nonInteractive !== true && process.stdin.isTTY,
   });
+  noteLegacyCodexProviderOverride(ctx.cfg);
   ctx.gatewayDetails = buildGatewayConnectionDetails({ config: ctx.cfg });
   if (ctx.gatewayDetails.remoteFallbackNote) {
     note(ctx.gatewayDetails.remoteFallbackNote, "Gateway");
@@ -213,6 +210,10 @@ async function runGatewayAuthHealth(ctx: DoctorHealthFlowContext): Promise<void>
     },
   };
   note("Gateway token configured.", "Gateway auth");
+}
+
+async function runClaudeCliHealth(ctx: DoctorHealthFlowContext): Promise<void> {
+  noteClaudeCliHealth(ctx.cfg);
 }
 
 async function runLegacyStateHealth(ctx: DoctorHealthFlowContext): Promise<void> {
@@ -291,18 +292,11 @@ async function runGatewayServicesHealth(ctx: DoctorHealthFlowContext): Promise<v
 }
 
 async function runStartupChannelMaintenanceHealth(ctx: DoctorHealthFlowContext): Promise<void> {
-  if (!ctx.prompter.shouldRepair) {
-    return;
-  }
-  await runChannelPluginStartupMaintenance({
+  await maybeRunDoctorStartupChannelMaintenance({
     cfg: ctx.cfg,
     env: process.env,
-    log: {
-      info: (message) => ctx.runtime.log(message),
-      warn: (message) => ctx.runtime.error(message),
-    },
-    trigger: "doctor-fix",
-    logPrefix: "doctor",
+    runtime: ctx.runtime,
+    shouldRepair: ctx.prompter.shouldRepair,
   });
 }
 
@@ -432,6 +426,13 @@ async function runMemorySearchHealthContribution(ctx: DoctorHealthFlowContext): 
   await noteMemoryRecallHealth(ctx.cfg);
 }
 
+async function runDevicePairingHealth(ctx: DoctorHealthFlowContext): Promise<void> {
+  await noteDevicePairingHealth({
+    cfg: ctx.cfg,
+    healthOk: ctx.healthOk ?? false,
+  });
+}
+
 async function runGatewayDaemonHealth(ctx: DoctorHealthFlowContext): Promise<void> {
   await maybeRepairGatewayDaemon({
     cfg: ctx.cfg,
@@ -498,6 +499,11 @@ export function resolveDoctorHealthContributions(): DoctorHealthContribution[] {
       id: "doctor:auth-profiles",
       label: "Auth profiles",
       run: runAuthProfileHealth,
+    }),
+    createDoctorHealthContribution({
+      id: "doctor:claude-cli",
+      label: "Claude CLI",
+      run: runClaudeCliHealth,
     }),
     createDoctorHealthContribution({
       id: "doctor:gateway-auth",
@@ -598,6 +604,11 @@ export function resolveDoctorHealthContributions(): DoctorHealthContribution[] {
       id: "doctor:memory-search",
       label: "Memory search",
       run: runMemorySearchHealthContribution,
+    }),
+    createDoctorHealthContribution({
+      id: "doctor:device-pairing",
+      label: "Device pairing",
+      run: runDevicePairingHealth,
     }),
     createDoctorHealthContribution({
       id: "doctor:gateway-daemon",

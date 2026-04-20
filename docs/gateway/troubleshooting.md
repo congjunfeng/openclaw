@@ -25,7 +25,7 @@ openclaw channels status --probe
 
 Expected healthy signals:
 
-- `openclaw gateway status` shows `Runtime: running` and `RPC probe: ok`.
+- `openclaw gateway status` shows `Runtime: running`, `Connectivity probe: ok`, and a `Capability: ...` line.
 - `openclaw doctor` reports no blocking config/service issues.
 - `openclaw channels status --probe` shows live per-account transport status and,
   where supported, probe/audit results such as `works` or `audit ok`.
@@ -50,7 +50,7 @@ Look for:
 Fix options:
 
 1. Disable `context1m` for that model to fall back to the normal context window.
-2. Use an Anthropic API key with billing, or enable Anthropic Extra Usage on the Anthropic OAuth/subscription account.
+2. Use an Anthropic credential that is eligible for long-context requests, or switch to an Anthropic API key.
 3. Configure fallback models so runs continue when Anthropic long-context requests are rejected.
 
 Related:
@@ -58,6 +58,61 @@ Related:
 - [/providers/anthropic](/providers/anthropic)
 - [/reference/token-use](/reference/token-use)
 - [/help/faq#why-am-i-seeing-http-429-ratelimiterror-from-anthropic](/help/faq#why-am-i-seeing-http-429-ratelimiterror-from-anthropic)
+
+## Local OpenAI-compatible backend passes direct probes but agent runs fail
+
+Use this when:
+
+- `curl ... /v1/models` works
+- tiny direct `/v1/chat/completions` calls work
+- OpenClaw model runs fail only on normal agent turns
+
+```bash
+curl http://127.0.0.1:1234/v1/models
+curl http://127.0.0.1:1234/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{"model":"<id>","messages":[{"role":"user","content":"hi"}],"stream":false}'
+openclaw infer model run --model <provider/model> --prompt "hi" --json
+openclaw logs --follow
+```
+
+Look for:
+
+- direct tiny calls succeed, but OpenClaw runs fail only on larger prompts
+- backend errors about `messages[].content` expecting a string
+- backend crashes that appear only with larger prompt-token counts or full agent
+  runtime prompts
+
+Common signatures:
+
+- `messages[...].content: invalid type: sequence, expected a string` → backend
+  rejects structured Chat Completions content parts. Fix: set
+  `models.providers.<provider>.models[].compat.requiresStringContent: true`.
+- direct tiny requests succeed, but OpenClaw agent runs fail with backend/model
+  crashes (for example Gemma on some `inferrs` builds) → OpenClaw transport is
+  likely already correct; the backend is failing on the larger agent-runtime
+  prompt shape.
+- failures shrink after disabling tools but do not disappear → tool schemas were
+  part of the pressure, but the remaining issue is still upstream model/server
+  capacity or a backend bug.
+
+Fix options:
+
+1. Set `compat.requiresStringContent: true` for string-only Chat Completions backends.
+2. Set `compat.supportsTools: false` for models/backends that cannot handle
+   OpenClaw's tool schema surface reliably.
+3. Lower prompt pressure where possible: smaller workspace bootstrap, shorter
+   session history, lighter local model, or a backend with stronger long-context
+   support.
+4. If tiny direct requests keep passing while OpenClaw agent turns still crash
+   inside the backend, treat it as an upstream server/model limitation and file
+   a repro there with the accepted payload shape.
+
+Related:
+
+- [/gateway/local-models](/gateway/local-models)
+- [/gateway/configuration](/gateway/configuration)
+- [/gateway/configuration-reference#openai-compatible-endpoints](/gateway/configuration-reference#openai-compatible-endpoints)
 
 ## No replies
 
@@ -138,12 +193,12 @@ Common signatures:
 
 Use `error.details.code` from the failed `connect` response to pick the next action:
 
-| Detail code                  | Meaning                                                  | Recommended action                                                                                                                                                                                                                                                                       |
-| ---------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AUTH_TOKEN_MISSING`         | Client did not send a required shared token.             | Paste/set token in the client and retry. For dashboard paths: `openclaw config get gateway.auth.token` then paste into Control UI settings.                                                                                                                                              |
-| `AUTH_TOKEN_MISMATCH`        | Shared token did not match gateway auth token.           | If `canRetryWithDeviceToken=true`, allow one trusted retry. Cached-token retries reuse stored approved scopes; explicit `deviceToken` / `scopes` callers keep requested scopes. If still failing, run the [token drift recovery checklist](/cli/devices#token-drift-recovery-checklist). |
-| `AUTH_DEVICE_TOKEN_MISMATCH` | Cached per-device token is stale or revoked.             | Rotate/re-approve device token using [devices CLI](/cli/devices), then reconnect.                                                                                                                                                                                                        |
-| `PAIRING_REQUIRED`           | Device identity is known but not approved for this role. | Approve pending request: `openclaw devices list` then `openclaw devices approve <requestId>`.                                                                                                                                                                                            |
+| Detail code                  | Meaning                                                                                                                                                                                      | Recommended action                                                                                                                                                                                                                                                                       |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AUTH_TOKEN_MISSING`         | Client did not send a required shared token.                                                                                                                                                 | Paste/set token in the client and retry. For dashboard paths: `openclaw config get gateway.auth.token` then paste into Control UI settings.                                                                                                                                              |
+| `AUTH_TOKEN_MISMATCH`        | Shared token did not match gateway auth token.                                                                                                                                               | If `canRetryWithDeviceToken=true`, allow one trusted retry. Cached-token retries reuse stored approved scopes; explicit `deviceToken` / `scopes` callers keep requested scopes. If still failing, run the [token drift recovery checklist](/cli/devices#token-drift-recovery-checklist). |
+| `AUTH_DEVICE_TOKEN_MISMATCH` | Cached per-device token is stale or revoked.                                                                                                                                                 | Rotate/re-approve device token using [devices CLI](/cli/devices), then reconnect.                                                                                                                                                                                                        |
+| `PAIRING_REQUIRED`           | Device identity needs approval. Check `error.details.reason` for `not-paired`, `scope-upgrade`, `role-upgrade`, or `metadata-upgrade`, and use `requestId` / `remediationHint` when present. | Approve pending request: `openclaw devices list` then `openclaw devices approve <requestId>`. Scope/role upgrades use the same flow after you review the requested access.                                                                                                               |
 
 Device auth v2 migration check:
 
@@ -226,7 +281,8 @@ Common signatures:
 
 - `SSH tunnel failed to start; falling back to direct probes.` → SSH setup failed, but the command still tried direct configured/loopback targets.
 - `multiple reachable gateways detected` → more than one target answered. Usually this means an intentional multi-gateway setup or stale/duplicate listeners.
-- `Probe diagnostics are limited by gateway scopes (missing operator.read)` → connect worked, but detail RPC is scope-limited; pair device identity or use credentials with `operator.read`.
+- `Read-probe diagnostics are limited by gateway scopes (missing operator.read)` → connect worked, but detail RPC is scope-limited; pair device identity or use credentials with `operator.read`.
+- `Capability: pairing-pending` or `gateway closed (1008): pairing required` → the gateway answered, but this client still needs pairing/approval before normal operator access.
 - unresolved `gateway.auth.*` / `gateway.remote.*` SecretRef warning text → auth material was unavailable in this command path for the failed target.
 
 Related:
@@ -416,7 +472,7 @@ What to check:
 Common signatures:
 
 - `refusing to bind gateway ... without auth` → non-loopback bind without a valid gateway auth path.
-- `RPC probe: failed` while runtime is running → gateway alive but inaccessible with current auth/url.
+- `Connectivity probe: failed` while runtime is running → gateway alive but inaccessible with current auth/url.
 
 ### 3) Pairing and device identity state changed
 

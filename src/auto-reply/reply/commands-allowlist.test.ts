@@ -46,6 +46,14 @@ type TelegramTestSectionConfig = {
   accounts?: Record<string, TelegramTestSectionConfig>;
 };
 
+type DmGroupAllowlistTestSectionConfig = {
+  allowFrom?: string[];
+  groupAllowFrom?: string[];
+  dm?: {
+    allowFrom?: string[];
+  };
+};
+
 function normalizeTelegramAllowFromEntries(values: Array<string | number>): string[] {
   return formatAllowFromLowercase({ allowFrom: values, stripPrefixRe: /^(telegram|tg):/i });
 }
@@ -117,7 +125,8 @@ const whatsappAllowlistTestPlugin: ChannelPlugin = {
   },
   allowlist: buildDmGroupAccountAllowlistAdapter({
     channelId: "whatsapp",
-    resolveAccount: ({ cfg }) => (cfg.channels?.whatsapp as Record<string, unknown>) ?? {},
+    resolveAccount: ({ cfg }) =>
+      (cfg.channels?.whatsapp as DmGroupAllowlistTestSectionConfig | undefined) ?? {},
     normalize: ({ values }) => values.map((value) => String(value).trim()).filter(Boolean),
     resolveDmAllowFrom: (account) => account.allowFrom,
     resolveGroupAllowFrom: (account) => account.groupAllowFrom,
@@ -143,7 +152,7 @@ function createLegacyAllowlistPlugin(channelId: "discord" | "slack"): ChannelPlu
     allowlist: buildLegacyDmAccountAllowlistAdapter({
       channelId,
       resolveAccount: ({ cfg }) =>
-        (cfg.channels?.[channelId] as Record<string, unknown> | undefined) ?? {},
+        (cfg.channels?.[channelId] as DmGroupAllowlistTestSectionConfig | undefined) ?? {},
       normalize: ({ values }) => values.map((value) => String(value).trim()).filter(Boolean),
       resolveDmAllowFrom: (account) => account.allowFrom ?? account.dm?.allowFrom,
       resolveGroupPolicy: () => undefined,
@@ -496,6 +505,29 @@ describe("handleAllowlistCommand", () => {
         From: "telegram-attacker",
       },
     );
+    params.command.senderIsOwner = false;
+
+    const result = await handleAllowlistCommand(params, true);
+
+    expect(result?.shouldContinue).toBe(false);
+    expect(result?.reply).toBeUndefined();
+    expect(writeConfigFileMock).not.toHaveBeenCalled();
+    expect(addChannelAllowFromStoreEntryMock).not.toHaveBeenCalled();
+  });
+
+  it("blocks non-owner allowlist writes before resolving target channel", async () => {
+    const cfg = {
+      commands: { text: true, config: true },
+      channels: {
+        telegram: { allowFrom: ["*"], configWrites: true },
+      },
+    } as OpenClawConfig;
+    const params = buildAllowlistParams("/allowlist add dm --channel unknown attacker-id", cfg, {
+      Provider: "telegram",
+      Surface: "telegram",
+      SenderId: "telegram-attacker",
+      From: "telegram-attacker",
+    });
     params.command.senderIsOwner = false;
 
     const result = await handleAllowlistCommand(params, true);
