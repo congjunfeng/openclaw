@@ -214,6 +214,8 @@ export type InitiateCallInput = {
   clientState?: Record<string, string>;
   /** Inline TwiML to execute (skips webhook, used for notify mode) */
   inlineTwiml?: string;
+  /** TwiML to serve once before normal webhook-driven call handling resumes. */
+  preConnectTwiml?: string;
 };
 
 export type InitiateCallResult = {
@@ -227,12 +229,23 @@ export type HangupCallInput = {
   reason: EndReason;
 };
 
+export type AnswerCallInput = {
+  callId: CallId;
+  providerCallId: ProviderCallId;
+};
+
 export type PlayTtsInput = {
   callId: CallId;
   providerCallId: ProviderCallId;
   text: string;
   voice?: string;
   locale?: string;
+};
+
+export type SendDtmfInput = {
+  callId: CallId;
+  providerCallId: ProviderCallId;
+  digits: string;
 };
 
 export type StartListeningInput = {
@@ -274,6 +287,8 @@ export type OutboundCallOptions = {
   message?: string;
   /** Call mode (overrides config default) */
   mode?: CallMode;
+  /** DTMF digits to send after the call is connected */
+  dtmfSequence?: string;
 };
 
 // -----------------------------------------------------------------------------

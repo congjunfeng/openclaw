@@ -1,4 +1,3 @@
-export type { MessagingToolSend } from "./pi-embedded-messaging.types.js";
 export {
   compactEmbeddedPiSession,
   compactEmbeddedPiSession as compactEmbeddedAgentSession,
@@ -21,6 +20,7 @@ export {
   runEmbeddedPiAgent as runEmbeddedAgent,
 } from "./pi-embedded-runner/run.js";
 export {
+  abortAndDrainEmbeddedPiRun,
   abortEmbeddedPiRun,
   abortEmbeddedPiRun as abortEmbeddedAgentRun,
   isEmbeddedPiRunActive,

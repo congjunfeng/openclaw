@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
-import { loadConfig } from "../../config/config.js";
+import { getRuntimeConfig } from "../../config/config.js";
 import { getCachedPluginJitiLoader, type PluginJitiLoaderCache } from "../jiti-loader-cache.js";
 import { loadPluginManifestRegistry } from "../manifest-registry.js";
-import { buildPluginLoaderAliasMap, shouldPreferNativeJiti } from "../sdk-alias.js";
+import { shouldPreferNativeJiti } from "../sdk-alias.js";
 
 type PluginRuntimeRecord = {
   origin?: string;
@@ -11,16 +11,9 @@ type PluginRuntimeRecord = {
   source: string;
 };
 
-type CachedPluginBoundaryLoaderParams = {
-  pluginId: string;
-  entryBaseName: string;
-  required?: boolean;
-  missingLabel?: string;
-};
-
 export function readPluginBoundaryConfigSafely() {
   try {
-    return loadConfig();
+    return getRuntimeConfig();
   } catch {
     return {};
   }
@@ -32,7 +25,6 @@ export function resolvePluginRuntimeRecord(
 ): PluginRuntimeRecord | null {
   const manifestRegistry = loadPluginManifestRegistry({
     config: readPluginBoundaryConfigSafely(),
-    cache: true,
   });
   const record = manifestRegistry.plugins.find((plugin) => plugin.id === pluginId);
   if (!record?.source) {
@@ -54,7 +46,6 @@ export function resolvePluginRuntimeRecordByEntryBaseNames(
 ): PluginRuntimeRecord | null {
   const manifestRegistry = loadPluginManifestRegistry({
     config: readPluginBoundaryConfigSafely(),
-    cache: true,
   });
   const matches = manifestRegistry.plugins.filter((plugin) => {
     if (!plugin?.source) {
@@ -116,13 +107,11 @@ export function resolvePluginRuntimeModulePath(
 
 export function getPluginBoundaryJiti(modulePath: string, loaders: PluginJitiLoaderCache) {
   const tryNative = shouldPreferNativeJiti(modulePath);
-  const aliasMap = buildPluginLoaderAliasMap(modulePath);
   return getCachedPluginJitiLoader({
     cache: loaders,
     modulePath,
     importerUrl: import.meta.url,
     jitiFilename: import.meta.url,
-    aliasMap,
     tryNative,
   });
 }
@@ -133,49 +122,4 @@ export function loadPluginBoundaryModuleWithJiti<TModule>(
   loaders: PluginJitiLoaderCache,
 ): TModule {
   return getPluginBoundaryJiti(modulePath, loaders)(modulePath) as TModule;
-}
-
-// oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- Dynamic plugin boundary loaders use caller-supplied module types.
-export function createCachedPluginBoundaryModuleLoader<TModule>(
-  params: CachedPluginBoundaryLoaderParams,
-): () => TModule | null {
-  let cachedModulePath: string | null = null;
-  let cachedModule: TModule | null = null;
-  const loaders: PluginJitiLoaderCache = new Map();
-
-  return () => {
-    const missingLabel = params.missingLabel ?? `${params.pluginId} plugin runtime`;
-    const record = resolvePluginRuntimeRecord(
-      params.pluginId,
-      params.required
-        ? () => {
-            throw new Error(`${missingLabel} is unavailable: missing plugin '${params.pluginId}'`);
-          }
-        : undefined,
-    );
-    if (!record) {
-      return null;
-    }
-    const modulePath = resolvePluginRuntimeModulePath(
-      record,
-      params.entryBaseName,
-      params.required
-        ? () => {
-            throw new Error(
-              `${missingLabel} is unavailable: missing ${params.entryBaseName} for plugin '${params.pluginId}'`,
-            );
-          }
-        : undefined,
-    );
-    if (!modulePath) {
-      return null;
-    }
-    if (cachedModule && cachedModulePath === modulePath) {
-      return cachedModule;
-    }
-    const loaded = loadPluginBoundaryModuleWithJiti<TModule>(modulePath, loaders);
-    cachedModulePath = modulePath;
-    cachedModule = loaded;
-    return loaded;
-  };
 }

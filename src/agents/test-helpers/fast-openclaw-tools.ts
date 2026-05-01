@@ -22,7 +22,14 @@ const coreTools = [
   stubActionTool("nodes", ["list", "invoke"]),
   stubActionTool("cron", ["schedule", "cancel"]),
   stubActionTool("message", ["send", "reply"]),
-  stubActionTool("gateway", ["status"]),
+  stubActionTool("gateway", [
+    "restart",
+    "config.get",
+    "config.schema.lookup",
+    "config.apply",
+    "config.patch",
+    "update.run",
+  ]),
   stubActionTool("agents_list", ["list", "show"]),
   stubActionTool("sessions_list", ["list", "show"]),
   stubActionTool("sessions_history", ["read", "tail"]),
@@ -30,6 +37,7 @@ const coreTools = [
   stubActionTool("sessions_spawn", ["spawn", "handoff"]),
   stubActionTool("subagents", ["list", "show"]),
   stubActionTool("session_status", ["get", "show"]),
+  stubActionTool("browser", ["status", "snapshot"]),
   stubTool("tts"),
   stubTool("image_generate"),
   stubTool("video_generate"),
@@ -38,8 +46,10 @@ const coreTools = [
   stubTool("pdf"),
 ];
 
+const createOpenClawToolsMock = vi.fn(() => coreTools.map((tool) => Object.assign({}, tool)));
+
 vi.mock("../openclaw-tools.js", () => ({
-  createOpenClawTools: () => coreTools.map((tool) => Object.assign({}, tool)),
+  createOpenClawTools: createOpenClawToolsMock,
   __testing: {
     setDepsForTest: () => {},
   },

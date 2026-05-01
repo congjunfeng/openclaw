@@ -1,6 +1,19 @@
+import {
+  REALTIME_VOICE_AGENT_CONSULT_TOOL_POLICIES,
+  type RealtimeVoiceAgentConsultToolPolicy,
+} from "openclaw/plugin-sdk/realtime-voice";
+import {
+  buildSecretInputSchema,
+  hasConfiguredSecretInput,
+  normalizeResolvedSecretInputString,
+  type SecretInput,
+} from "openclaw/plugin-sdk/secret-input";
 import { z } from "openclaw/plugin-sdk/zod";
 import { TtsAutoSchema, TtsConfigSchema, TtsModeSchema, TtsProviderSchema } from "../api.js";
 import { deepMergeDefined } from "./deep-merge.js";
+import { DEFAULT_VOICE_CALL_REALTIME_INSTRUCTIONS } from "./realtime-defaults.js";
+
+export { DEFAULT_VOICE_CALL_REALTIME_INSTRUCTIONS } from "./realtime-defaults.js";
 
 // -----------------------------------------------------------------------------
 // Phone Number Validation
@@ -32,6 +45,8 @@ export type InboundPolicy = z.infer<typeof InboundPolicySchema>;
 // Provider-Specific Configuration
 // -----------------------------------------------------------------------------
 
+const SecretInputSchema = buildSecretInputSchema();
+
 export const TelnyxConfigSchema = z
   .object({
     /** Telnyx API v2 key */
@@ -49,10 +64,12 @@ export const TwilioConfigSchema = z
     /** Twilio Account SID */
     accountSid: z.string().min(1).optional(),
     /** Twilio Auth Token */
-    authToken: z.string().min(1).optional(),
+    authToken: SecretInputSchema.optional(),
   })
   .strict();
-export type TwilioConfig = z.infer<typeof TwilioConfigSchema>;
+export type TwilioConfig = Omit<z.infer<typeof TwilioConfigSchema>, "authToken"> & {
+  authToken?: SecretInput;
+};
 
 export const PlivoConfigSchema = z
   .object({
@@ -205,6 +222,9 @@ export type VoiceCallRealtimeProvidersConfig = z.infer<
   typeof VoiceCallRealtimeProvidersConfigSchema
 >;
 
+export const VoiceCallRealtimeToolPolicySchema = z.enum(REALTIME_VOICE_AGENT_CONSULT_TOOL_POLICIES);
+export type VoiceCallRealtimeToolPolicy = RealtimeVoiceAgentConsultToolPolicy;
+
 export const VoiceCallStreamingProvidersConfigSchema = z
   .record(z.string(), z.record(z.string(), z.unknown()))
   .default({});
@@ -221,14 +241,22 @@ export const VoiceCallRealtimeConfigSchema = z
     /** Optional override for the local WebSocket route path. */
     streamPath: z.string().min(1).optional(),
     /** System instructions passed to the realtime provider. */
-    instructions: z.string().optional(),
+    instructions: z.string().default(DEFAULT_VOICE_CALL_REALTIME_INSTRUCTIONS),
+    /** Tool policy for the shared OpenClaw agent consult tool. */
+    toolPolicy: VoiceCallRealtimeToolPolicySchema.default("safe-read-only"),
     /** Tool definitions exposed to the realtime provider. */
     tools: z.array(RealtimeToolSchema).default([]),
     /** Provider-owned raw config blobs keyed by provider id. */
     providers: VoiceCallRealtimeProvidersConfigSchema,
   })
   .strict()
-  .default({ enabled: false, tools: [], providers: {} });
+  .default({
+    enabled: false,
+    instructions: DEFAULT_VOICE_CALL_REALTIME_INSTRUCTIONS,
+    toolPolicy: "safe-read-only",
+    tools: [],
+    providers: {},
+  });
 export type VoiceCallRealtimeConfig = z.infer<typeof VoiceCallRealtimeConfigSchema>;
 
 // -----------------------------------------------------------------------------
@@ -313,11 +341,10 @@ export const VoiceCallConfigSchema = z
 
     /**
      * Maximum age of a call in seconds before it is automatically reaped.
-     * Catches calls stuck in unexpected states (e.g., notify-mode calls that
-     * never receive a terminal webhook). Set to 0 to disable.
-     * Default: 0 (disabled). Recommended: 120-300 for production.
+     * Catches calls stuck before answer (for example, local mock calls that
+     * never receive provider webhooks). Set to 0 to disable.
      */
-    staleCallReaperSeconds: z.number().int().nonnegative().default(0),
+    staleCallReaperSeconds: z.number().int().nonnegative().default(120),
 
     /** Silence timeout for end-of-speech detection (ms) */
     silenceTimeoutMs: z.number().int().positive().default(800),
@@ -334,7 +361,7 @@ export const VoiceCallConfigSchema = z
     /** Webhook server configuration */
     serve: VoiceCallServeConfigSchema,
 
-    /** Tailscale exposure configuration (legacy, prefer tunnel config) */
+    /** @deprecated Prefer tunnel config. */
     tailscale: VoiceCallTailscaleConfigSchema,
 
     /** Tunnel configuration (unified ngrok/tailscale) */
@@ -361,6 +388,9 @@ export const VoiceCallConfigSchema = z
     /** Store path for call logs */
     store: z.string().optional(),
 
+    /** Agent ID to use for voice response generation. Defaults to "main". */
+    agentId: z.string().min(1).optional(),
+
     /** Optional model override for generating voice responses. */
     responseModel: z.string().optional(),
 
@@ -373,13 +403,15 @@ export const VoiceCallConfigSchema = z
   .strict();
 
 export type VoiceCallConfig = z.infer<typeof VoiceCallConfigSchema>;
-type DeepPartial<T> =
-  T extends Array<infer U>
+type DeepPartial<T> = T extends SecretInput
+  ? T
+  : T extends Array<infer U>
     ? DeepPartial<U>[]
     : T extends object
       ? { [K in keyof T]?: DeepPartial<T[K]> }
       : T;
 export type VoiceCallConfigInput = DeepPartial<VoiceCallConfig>;
+const TWILIO_AUTH_TOKEN_PATH = "plugins.entries.voice-call.config.twilio.authToken";
 
 // -----------------------------------------------------------------------------
 // Configuration Helpers
@@ -436,6 +468,15 @@ function sanitizeVoiceCallProviderConfigs(
       (entry): entry is [string, Record<string, unknown>] => entry[1] !== undefined,
     ),
   );
+}
+
+export function resolveTwilioAuthToken(
+  config: Pick<VoiceCallConfig, "twilio">,
+): string | undefined {
+  return normalizeResolvedSecretInputString({
+    value: config.twilio?.authToken,
+    path: TWILIO_AUTH_TOKEN_PATH,
+  });
 }
 
 export function normalizeVoiceCallConfig(config: VoiceCallConfigInput): VoiceCallConfig {
@@ -502,6 +543,7 @@ export function resolveVoiceCallConfig(config: VoiceCallConfigInput): VoiceCallC
 
   // Twilio
   if (resolved.provider === "twilio") {
+    resolved.fromNumber = resolved.fromNumber ?? process.env.TWILIO_FROM_NUMBER;
     resolved.twilio = resolved.twilio ?? {};
     resolved.twilio.accountSid = resolved.twilio.accountSid ?? process.env.TWILIO_ACCOUNT_SID;
     resolved.twilio.authToken = resolved.twilio.authToken ?? process.env.TWILIO_AUTH_TOKEN;
@@ -556,7 +598,11 @@ export function validateProviderConfig(config: VoiceCallConfig): {
   }
 
   if (!config.fromNumber && config.provider !== "mock") {
-    errors.push("plugins.entries.voice-call.config.fromNumber is required");
+    errors.push(
+      config.provider === "twilio"
+        ? "plugins.entries.voice-call.config.fromNumber is required (or set TWILIO_FROM_NUMBER env)"
+        : "plugins.entries.voice-call.config.fromNumber is required",
+    );
   }
 
   if (config.provider === "telnyx") {
@@ -583,7 +629,7 @@ export function validateProviderConfig(config: VoiceCallConfig): {
         "plugins.entries.voice-call.config.twilio.accountSid is required (or set TWILIO_ACCOUNT_SID env)",
       );
     }
-    if (!config.twilio?.authToken) {
+    if (!hasConfiguredSecretInput(config.twilio?.authToken)) {
       errors.push(
         "plugins.entries.voice-call.config.twilio.authToken is required (or set TWILIO_AUTH_TOKEN env)",
       );
