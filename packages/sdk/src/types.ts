@@ -40,6 +40,18 @@ export type EnvironmentSelection =
   | { type: "managed"; provider: string; repo?: string; ref?: string }
   | { type: "ephemeral"; provider: string; repo?: string; ref?: string };
 
+export type EnvironmentSummary = {
+  id: string;
+  type: "local" | "gateway" | "node" | "managed" | "ephemeral" | (string & {});
+  label?: string;
+  status: "available" | "unavailable" | "starting" | "stopping" | "error";
+  capabilities?: string[];
+};
+
+export type EnvironmentsListResult = {
+  environments: EnvironmentSummary[];
+};
+
 export type WorkspaceSelection = {
   cwd?: string;
   repo?: string;
@@ -112,6 +124,24 @@ export type SDKError = {
   code?: string;
   message: string;
   details?: unknown;
+};
+
+export type ToolInvokeParams = {
+  args?: JsonObject;
+  sessionKey?: string;
+  agentId?: string;
+  confirm?: boolean;
+  idempotencyKey?: string;
+};
+
+export type ToolInvokeResult = {
+  ok: boolean;
+  toolName: string;
+  output?: unknown;
+  requiresApproval?: boolean;
+  approvalId?: string;
+  source?: string;
+  error?: SDKError;
 };
 
 export type RunResult = {

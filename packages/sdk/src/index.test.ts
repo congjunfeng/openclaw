@@ -335,22 +335,72 @@ describe("OpenClaw SDK", () => {
     await expect(oc.tasks.cancel("task_123")).rejects.toThrow(
       "oc.tasks.cancel is not supported by the current OpenClaw Gateway yet",
     );
-    await expect(oc.tools.invoke("demo")).rejects.toThrow(
-      "oc.tools.invoke is not supported by the current OpenClaw Gateway yet",
-    );
-    await expect(oc.environments.list()).rejects.toThrow(
-      "oc.environments.list is not supported by the current OpenClaw Gateway yet",
-    );
     await expect(oc.environments.create({ provider: "testbox" })).rejects.toThrow(
       "oc.environments.create is not supported by the current OpenClaw Gateway yet",
-    );
-    await expect(oc.environments.status("environment_123")).rejects.toThrow(
-      "oc.environments.status is not supported by the current OpenClaw Gateway yet",
     );
     await expect(oc.environments.delete("environment_123")).rejects.toThrow(
       "oc.environments.delete is not supported by the current OpenClaw Gateway yet",
     );
     expect(transport.calls).toEqual([]);
+  });
+
+  it("invokes tools through the Gateway tools.invoke method", async () => {
+    const transport = new FakeTransport({
+      "tools.invoke": { ok: true, toolName: "demo", output: { value: 1 }, source: "core" },
+    });
+    const oc = new OpenClaw({ transport });
+
+    await expect(
+      oc.tools.invoke("demo", {
+        args: { mode: "test" },
+        sessionKey: "agent:main:main",
+        confirm: false,
+        idempotencyKey: "tools-invoke-test",
+      }),
+    ).resolves.toMatchObject({ ok: true, toolName: "demo", output: { value: 1 } });
+    expect(transport.calls).toEqual([
+      {
+        method: "tools.invoke",
+        params: {
+          name: "demo",
+          args: { mode: "test" },
+          sessionKey: "agent:main:main",
+          confirm: false,
+          idempotencyKey: "tools-invoke-test",
+        },
+        options: undefined,
+      },
+    ]);
+  });
+
+  it("lists and reads environment status through current Gateway methods", async () => {
+    const gatewayEnvironment = {
+      id: "gateway",
+      type: "local",
+      label: "Gateway local",
+      status: "available",
+      capabilities: ["agent.run"],
+    };
+    const transport = new FakeTransport({
+      "environments.list": { environments: [gatewayEnvironment] },
+      "environments.status": gatewayEnvironment,
+    });
+    const oc = new OpenClaw({ transport });
+
+    await expect(oc.environments.list()).resolves.toEqual({
+      environments: [gatewayEnvironment],
+    });
+    await expect(oc.environments.status("gateway")).resolves.toEqual(gatewayEnvironment);
+    await expect(oc.environments.create({ provider: "testbox" })).rejects.toThrow(
+      "oc.environments.create is not supported by the current OpenClaw Gateway yet",
+    );
+    await expect(oc.environments.delete("gateway")).rejects.toThrow(
+      "oc.environments.delete is not supported by the current OpenClaw Gateway yet",
+    );
+    expect(transport.calls).toEqual([
+      { method: "environments.list", params: {}, options: undefined },
+      { method: "environments.status", params: { environmentId: "gateway" }, options: undefined },
+    ]);
   });
 
   it("cancels runs and checks model auth status through current Gateway methods", async () => {
